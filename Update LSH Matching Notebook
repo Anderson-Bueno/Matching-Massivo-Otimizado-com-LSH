@@ -1,0 +1,114 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC ## 🚀 Pipeline Completo com Auto-KMeans, Nomeação Dinâmica, LSH e Exportação de Pares Similares
+
+# COMMAND ----------
+from pyspark.sql.functions import *
+from pyspark.sql.types import DoubleType, StringType
+from pyspark.ml.feature import VectorAssembler, PCA, BucketedRandomProjectionLSH
+from pyspark.ml.clustering import KMeans
+from pyspark.ml.evaluation import ClusteringEvaluator
+from pyspark.ml.linalg import Vectors
+from pyspark.storagelevel import StorageLevel
+import matplotlib.pyplot as plt
+
+# COMMAND ----------
+# ✅ Configurações recomendadas para escala
+spark.conf.set("spark.sql.shuffle.partitions", 200)
+spark.conf.set("spark.sql.adaptive.enabled", "true")
+spark.conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")
+spark.conf.set("spark.sql.execution.arrow.pyspark.enabled", "true")
+
+# COMMAND ----------
+# ✅ Leitura e preparação dos dados (exemplo com Parquet)
+data_path = "dbfs:/FileStore/shared_uploads/seuarquivo.parquet"
+df_raw = spark.read.parquet(data_path).dropDuplicates().filter(col("idcliente").isNotNull())
+
+# COMMAND ----------
+# ✅ Feature Engineering simples
+from pyspark.sql.functions import countDistinct
+
+df_feat = df_raw.groupBy("idcliente").agg(
+    sum("quantidade").alias("quantidade"),
+    avg("valorunitario").alias("ticket_medio"),
+    countDistinct("dataconsumo").alias("frequencia"),
+    collect_set("categoria_nivel_1").alias("categorias_1")
+)
+
+# COMMAND ----------
+# ✅ Vetorizador RFMT
+rfmt_vec = VectorAssembler(inputCols=["quantidade", "ticket_medio", "frequencia"], outputCol="features_raw")
+df_feat = rfmt_vec.transform(df_feat)
+
+# COMMAND ----------
+# ✅ PCA para redução de dimensionalidade
+pca = PCA(k=3, inputCol="features_raw", outputCol="features")
+df_feat = pca.fit(df_feat).transform(df_feat)
+
+# COMMAND ----------
+# ✅ Auto KMeans com Silhouette
+
+def auto_kmeans(df, features_col="features", k_range=(2, 8)):
+    evaluator = ClusteringEvaluator(featuresCol=features_col)
+    silhouette_scores = []
+    for k in range(k_range[0], k_range[1] + 1):
+        model = KMeans(k=k, seed=42, featuresCol=features_col).fit(df)
+        preds = model.transform(df)
+        score = evaluator.evaluate(preds)
+        silhouette_scores.append((k, score))
+    best_k = max(silhouette_scores, key=lambda x: x[1])[0]
+    return best_k, silhouette_scores
+
+# COMMAND ----------
+# ✅ Execução do Auto-KMeans
+best_k, scores = auto_kmeans(df_feat)
+kmeans = KMeans(k=best_k, seed=42, featuresCol="features")
+df_clustered = kmeans.fit(df_feat).transform(df_feat)
+
+# COMMAND ----------
+# ✅ Nomeação dinâmica dos perfis
+avg_ticket = df_feat.agg(avg("ticket_medio")).first()[0]
+avg_freq = df_feat.agg(avg("frequencia")).first()[0]
+
+df_named = df_clustered.withColumn(
+    "perfil_nomeado",
+    expr(f"""
+        CASE
+            WHEN ticket_medio >= {avg_ticket} AND frequencia >= {avg_freq} THEN 'A'
+            WHEN ticket_medio >= {avg_ticket} THEN 'Pre'
+            WHEN frequencia >= {avg_freq} THEN 'Frequente'
+            WHEN array_contains(categorias_1, 'TI') THEN 'P'
+            WHEN array_contains(categorias_1, 'ELE') THEN 'E'
+            ELSE 'Outros'
+        END
+    """)
+)
+
+# COMMAND ----------
+# ✅ Similaridade com LSH (Bucketed Random Projection)
+df_lsh = df_named.withColumn("similar_features", array(col("ticket_medio"), col("frequencia"), col("quantidade")))
+
+lsh = BucketedRandomProjectionLSH(inputCol="similar_features", outputCol="hashes", bucketLength=2.0)
+lsh_model = lsh.fit(df_lsh)
+similares = lsh_model.approxSimilarityJoin(df_lsh, df_lsh, threshold=1.5, distCol="distancia")
+
+# COMMAND ----------
+# ✅ Exportação de resultados
+output_path_clusters = "/FileStore/output/clusterizados.csv"
+output_path_similares = "/FileStore/output/pares_similares.csv"
+
+df_named.write.mode("overwrite").option("header", True).csv(output_path_clusters)
+similares.select(
+    col("datasetA.idcliente").alias("idcliente_a"),
+    col("datasetB.idcliente").alias("idcliente_b"),
+    col("distancia")
+).write.mode("overwrite").option("header", True).csv(output_path_similares)
+
+# COMMAND ----------
+# ✅ Exibir Silhouette Scores
+import pandas as pd
+import matplotlib.pyplot as plt
+
+pd.DataFrame(scores, columns=["k", "silhouette"]).plot(x="k", y="silhouette", marker="o", title="Silhouette por K")
+plt.grid(True)
+plt.show()
