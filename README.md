@@ -1,4 +1,4 @@
-## Matching Massivo Otimizado com LSH
+## Como realizar matching de similaridade entre milhões de clientes de forma escalável, sem comprometer a acurácia, quando o método tradicional (self-join quadrático) se torna inviável devido a restrições computacionais (tempo, memória e custo)
 
 ### 📌 **Objetivo**
 
