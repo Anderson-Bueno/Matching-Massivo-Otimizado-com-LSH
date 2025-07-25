@@ -1,0 +1,23 @@
+# 📌 Contexto do Problema
+
+Natureza do Problema:
+
+Computacional: O método clássico de calcular similaridade entre todos os pares de clientes (self-join completo) tem complexidade O(n²), tornando-se proibitivo para bases médias/grandes (ex: >500k registros).
+
+Prático: Gera gargalos como:
+
+Tempo de execução elevado (>3 horas).
+
+Consumo excessivo de memória (spill no disco).
+
+Alto custo em ambientes cloud (ex: Databricks).
+
+Impacto no Negócio:
+
+Limita a escalabilidade de pipelines de segmentação de clientes, recomendação personalizada ou detecção de fraudes.
+
+Inviabiliza análises em tempo hábil para tomada de decisão.
+
+Solução:
+Substituir o self-join por técnicas de aproximação probabilística (como Locality-Sensitive Hashing - LSH), reduzindo a complexidade para O(n·log n) e mantendo acuracia aceitável (~89-91% vs. baseline).
+
